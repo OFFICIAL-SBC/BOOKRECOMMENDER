@@ -1,3 +1,5 @@
+from typing import List, Optional
+from sqlalchemy import create_engine, text
 import os
 import numpy as np
 import pandas as pd
@@ -72,10 +74,12 @@ def retrieve_semantic_recommendations(
     )
 
     recommended_books_isbn = [
-        int(rec.page_content.strip('"').split(" ")[0]) for rec in recs]
+        str(rec.page_content.strip('"').split(" ")[0]) for rec in recs]
 
-    recommended_books = df_books[df_books["isbn13"].isin(
-        recommended_books_isbn)].head(initial_top_k)
+    # recommended_books = df_books[df_books["isbn13"].isin(
+    #     recommended_books_isbn)].head(initial_top_k)
+
+    recommended_books = get_books_by_isbn13(recommended_books_isbn)
 
     if category != "All":
         recommended_books = recommended_books[recommended_books["simple_categories"]
@@ -98,6 +102,74 @@ def retrieve_semantic_recommendations(
             by="sadness", ascending=False, inplace=True)
 
     return recommended_books
+
+
+def get_books_by_isbn13(isbn13_list: List[str]) -> pd.DataFrame:
+
+    user = os.getenv("DB_USER")
+    password = os.getenv("DB_PASSWORD")
+    host = os.getenv("DB_HOST")
+    port = os.getenv("DB_PORT")
+    schema = os.getenv("DB_SCHEMA")
+
+    required_vars = [user, password, host, port, schema]
+    if not all(required_vars):
+        missing_vars = []
+        if not user:
+            missing_vars.append("DB_USER")
+        if not password:
+            missing_vars.append("DB_PASSWORD")
+        if not host:
+            missing_vars.append("DB_HOST")
+        if not port:
+            missing_vars.append("DB_PORT")
+        if not schema:
+            missing_vars.append("DB_SCHEMA")
+
+        raise ValueError(
+            f"The following environment variables are missing: {', '.join(missing_vars)}")
+
+    table = "books_with_emotions"
+
+    if not isbn13_list or not isinstance(isbn13_list, list):
+        return pd.DataFrame()
+
+    isbn13_list = [isbn for isbn in isbn13_list if isbn and str(isbn).strip()]
+
+    if not isbn13_list:
+        return pd.DataFrame()
+
+    try:
+        engine = create_engine(
+            f"mysql+pymysql://{user}:{password}@{host}:{port}/{schema}",
+            pool_pre_ping=True,
+            pool_recycle=3600
+        )
+    except Exception as e:
+        print(f"Error creating database engine: {e}")
+        return pd.DataFrame()
+
+    placeholders = ", ".join([":isbn" + str(i)
+                             for i in range(len(isbn13_list))])
+
+    params = {f"isbn{i}": isbn for i, isbn in enumerate(isbn13_list)}
+
+    query = f"SELECT * FROM {table} WHERE isbn13 IN ({placeholders})"
+
+    conn = None
+    try:
+        conn = engine.connect()
+        result = pd.read_sql_query(text(query), conn, params=params)
+        return result
+
+    except Exception as e:
+        print(f"Error executing query: {e}")
+        return pd.DataFrame()
+
+    finally:
+        if conn:
+            conn.close()
+        engine.dispose()  # Clean up the connection pool
 
 
 def recommend_books(
